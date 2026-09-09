@@ -172,8 +172,11 @@ removes "did the upload actually take?" from the list of things a bug could be.
 - Pulse-train timing (`pulseTask`, microsecond-accurate edges) — designed and
   documented in §7, *not present in `firmware/` yet*. The app already speaks
   `FIRE`/`PULSE`/`DONE`/`ABORT`; the committed sketches do not answer them.
-- Digital voltage control via the ADJ current sink — schematic settled, no
-  protoboard sweep run
+- Closed-loop voltage control — implemented in `ble_params.ino`, verified only
+  against a simulated plant. No protoboard sweep run, and **`VSENSE_GAIN` /
+  `VSENSE_OFFSET` are inert placeholders until a two-point calibration is
+  done against a trusted meter.** Until then the reported voltage is only as
+  good as the nominal 17.79 divider ratio.
 
 **Open questions**
 
