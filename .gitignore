@@ -1,0 +1,66 @@
+# ---------------------------------------------------------------- build output
+build/
+build-*/
+release/
+debug/
+*.o
+*.obj
+*.so
+*.a
+*.exe
+*.apk
+*.aab
+
+# qmake / moc / uic / rcc generate these next to the sources on some setups,
+# so they are ignored by pattern rather than only by directory.
+Makefile
+Makefile.Debug
+Makefile.Release
+.qmake.stash
+ui_*.h
+moc_*.cpp
+moc_*.h
+moc_predefs.h
+qrc_*.cpp
+object_script.*
+*_plugin_import.cpp
+
+# ---------------------------------------------------------------- Qt Creator
+# .pro.user holds absolute kit paths and per-machine build directories.
+*.pro.user
+*.pro.user.*
+CMakeLists.txt.user*
+.qtcreator/
+.qtc_clangd/
+
+# ---------------------------------------------------------------- Android
+android-build/
+android-*-deployment-settings.json
+local.properties
+.gradle/
+# Signing material must never be committed.
+*.keystore
+*.jks
+
+# ---------------------------------------------------------------- Arduino
+firmware/**/build/
+*.ino.hex
+*.ino.elf
+*.ino.bin
+*.ino.map
+
+# ---------------------------------------------------------------- editors / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---------------------------------------------------------------- stray locals
+# Unreferenced 1.9 MB duplicate of title.png - not in resources.qrc.
+# Delete it and this line can go.
+title - Copy.png

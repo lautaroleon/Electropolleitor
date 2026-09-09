@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ScanPage</class>
+ <widget class="QWidget" name="ScanPage">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>420</width>
+    <height>720</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Select device</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">/* ScanPage lives inside MainWindow's QStackedWidget, so it inherits the
+   Instrument Light rules from there. These are the page-local additions
+   only - keep the palette itself in one place, in mainwindow.ui. */
+QLabel#lblScanTitle { color: #16232e; font-size: 20pt; padding: 8px; }</string>
+  </property>
+  <layout class="QVBoxLayout" name="layoutRoot">
+   <property name="spacing">
+    <number>12</number>
+   </property>
+   <item>
+    <widget class="QLabel" name="lblScanTitle">
+     <property name="text">
+      <string>Scanning for electroporators...</string>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignmentFlag::AlignCenter</set>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QListWidget" name="listDevices"/>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="layoutButtons">
+     <item>
+      <widget class="QPushButton" name="btnRescan">
+       <property name="text">
+        <string>Rescan</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnCancelScan">
+       <property name="text">
+        <string>Cancel</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

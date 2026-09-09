@@ -1,0 +1,10 @@
+<RCC>
+    <qresource prefix="/">
+        <file>title.png</file>
+        <file>asustado.png</file>
+        <file>electrocuted.png</file>
+        <file>freaking.png</file>
+        <file>happy.png</file>
+        <file>normal.png</file>
+    </qresource>
+</RCC>

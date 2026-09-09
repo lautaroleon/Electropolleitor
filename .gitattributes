@@ -1,0 +1,12 @@
+# Normalise to LF in the repository. Development happens on Windows but the
+# Android toolchain and every reviewer's diff are happier without CRLF churn.
+* text=auto eol=lf
+
+# Qt Designer forms are XML but Designer rewrites them wholesale; treating them
+# as text is still correct, just noisy on reformat.
+*.ui  text eol=lf
+*.pro text eol=lf
+*.qrc text eol=lf
+*.ino text eol=lf
+
+*.png binary
