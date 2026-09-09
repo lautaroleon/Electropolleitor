@@ -173,10 +173,18 @@ removes "did the upload actually take?" from the list of things a bug could be.
   documented in §7, *not present in `firmware/` yet*. The app already speaks
   `FIRE`/`PULSE`/`DONE`/`ABORT`; the committed sketches do not answer them.
 - Closed-loop voltage control — implemented in `ble_params.ino`, verified only
-  against a simulated plant. No protoboard sweep run, and **`VSENSE_GAIN` /
-  `VSENSE_OFFSET` are inert placeholders until a two-point calibration is
-  done against a trusted meter.** Until then the reported voltage is only as
-  good as the nominal 17.79 divider ratio.
+  against a simulated plant. Feed-forward jump from the measured line, a
+  100 ms integrator hold while the RC filter catches up, then integral trim
+  to 1 %, with a hard `V_TRIP` overvoltage backstop.
+
+  **Two separate calibrations, and they are not interchangeable:**
+  `CAL_V0` / `CAL_K` describe the *set* path (two duty points against a DMM);
+  `VSENSE_GAIN` / `VSENSE_OFFSET` describe the *read* path (the divider
+  ratio). An error in the first is corrected by the loop. An error in the
+  second moves what the loop converges to — it will confidently hold the
+  wrong voltage. `CAL_V0`/`CAL_K` carry bench figures; the sense trim is
+  still inert, so the reported voltage is only as good as the nominal 17.79
+  divider ratio until it is measured.
 
 **Open questions**
 

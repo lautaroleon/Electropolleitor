@@ -7,9 +7,18 @@
  *
  * Voltage control is closed-loop: a 12-bit PWM drives the LM317 ADJ current
  * sink, the sense divider is read back, and the duty is trimmed until the
- * measurement is within 1 % of the setpoint. Nothing in the set path needs
- * to be accurate - the loop absorbs op-amp offset, base current, and rail
- * and resistor tolerance. Only the READ path is calibrated; see VSENSE_GAIN.
+ * measurement is within 1 % of the setpoint.
+ *
+ * A SET jumps duty straight to the feed-forward estimate from the measured
+ * line V_OUT(D) = CAL_V0 - CAL_K * D, freezes the integrator for REG_HOLD
+ * periods while the RC filter catches up, then trims. The integrator only
+ * has to cover the calibration residual, never search the range.
+ *
+ * Two calibrations, and they are not interchangeable:
+ *   CAL_V0 / CAL_K   the SET path, two duty points against a DMM
+ *   VSENSE_GAIN      the READ path, the divider ratio
+ * Getting one wrong is corrected by the loop. Getting the other wrong moves
+ * what the loop converges TO.
  *
  * No pulse train here. FIRE/ABORT are not implemented in this sketch.
  */
@@ -57,35 +66,54 @@ static const int    VSET_MAX     = (1 << VSET_BITS) - 1;             // 4095
 static const float  VSET_FULL    = (float)(1 << VSET_BITS);          // 4096
 static const int    VSET_FREQ_HZ = 19531;    // 80 MHz / 4096, forced at 12 bit
 
-// Plant constants, design notes S2. V_out = 1.25 + R2 * (5.26mA - V_filter/330)
-static const float  VDD_PWM    = 3.3f;
-static const float  R2_OHM     = 8250.0f;
-static const float  RSENSE_OHM = 330.0f;
-static const float  I_ADJ_FULL = 5.26e-3f;   // 1.25/240 plus the LM317's I_adj
-static const float  VREF_317   = 1.25f;
-
-// Output volts per PWM count, ~20 mV. The slope is NEGATIVE: more duty means
-// more current stolen from ADJ, which means a LOWER output. Every sign in the
-// loop below follows from that.
-static const float  VOLTS_PER_COUNT = (VDD_PWM * R2_OHM) / (RSENSE_OHM * VSET_FULL);
+// ---- SET-PATH CALIBRATION -------------------------------------------------
+// Over the usable range the set path is a straight line:
+//
+//     V_OUT(D) = CAL_V0 - CAL_K * D          D = duty, 0.0 .. 1.0
+//
+// Measure it at bring-up. Command two duty values well inside the range
+// (0.10 and 0.60 are convenient), read the output with a DMM, and solve:
+//
+//     CAL_K  = (V_lo_duty - V_hi_duty) / (D_hi - D_lo)
+//     CAL_V0 =  V_lo_duty + CAL_K * D_lo
+//
+// These are MEASURED, not computed. The design-notes nominals work out to
+// V0 = 44.65 and K = 82.5; the bench figures below differ by 10 % and 26 %,
+// which is a ~4 V error in the feed-forward jump if you trust the nominals.
+// That gap is the whole reason this is a two-point measurement.
+//
+// Design notes S10 wants these in NVS eventually. Constants until then -
+// reflashing to recalibrate is acceptable, silently running on stale flash
+// after a hardware change is not.
+static const float  CAL_V0 = 49.1f;    // V at D = 0
+static const float  CAL_K  = 61.3f;    // V per unit duty
 
 // ---- regulator tuning ----
-// The ADJ filter is 10k + 1uF, tau = 10 ms. Sampling faster than ~5 tau reads
-// the filter mid-slew and the loop chases its own settling.
-static const int    REG_PERIOD_MS = 60;
-static const float  REG_GAIN      = 0.6f;    // damping; 1.0 overshoots on ADC noise
+// Ki is per 20 ms step, from the bench sweep: 0.25 critically damped,
+// 0.5 rings, 1.5 unstable. Do not raise it without redoing that sweep.
+static const int    REG_PERIOD_MS = 20;
+static const float  REG_KI        = 0.25f;
+static const int    REG_HOLD      = 5;       // 100 ms, ~10 tau of the ADJ filter
+
 static const float  REG_TOL_FRAC  = 0.01f;   // the 1 % target from the notes
 static const float  REG_TOL_ABS   = 0.15f;   // floor, so 2 V setpoints stay reachable
 static const int    REG_SETTLE_N  = 3;
-static const int    REG_MAX_STEPS = 60;      // ~3.6 s, then declare non-convergence
+static const int    REG_MAX_STEPS = 150;     // 3 s of integrating without arriving
+
+// Hard overvoltage backstop, design notes S7 item 8: the voltage control's
+// failure direction needs one. Above this the loop is not trusted to correct
+// itself - park at full sink immediately. Sits above the 45 V protocol
+// maximum and below the CAL_V0 ceiling the hardware can actually reach.
+static const float  V_TRIP = 47.0f;
 
 // Boot state is full sink: output parked at 1.25 V, matching where the 10k
 // pull-up holds it while the GPIO is still high-Z before setup() runs.
-int      vsetCounts  = VSET_MAX;
+float    vsetDuty    = 1.0f;
 bool     regSettled  = false;
 bool     regFailed   = false;
 int      regSettleHits = 0;
 int      regSteps    = 0;
+int      regHold     = 0;
 uint32_t lastReg     = 0;
 
 // ---- parameters, with authoritative limits ----
@@ -127,6 +155,14 @@ void sendAll() {
 }
 
 // ------------------------------------------------------------ measure
+//
+// analogReadMilliVolts() is used deliberately in place of
+// raw_counts * V_REF / 4096. It applies the ADC calibration burned into this
+// individual die's eFuse, which is a per-chip measured reference rather than
+// a board-level one - strictly better than any V_REF constant, and it also
+// linearises the attenuator. Do NOT multiply by a separate measured V_REF on
+// top of it: that double-corrects. VSENSE_GAIN below is the remaining trim,
+// and it exists to correct the DIVIDER, not the reference.
 float readVolts() {
   uint32_t acc = 0;
   for (int i = 0; i < 16; i++) acc += analogReadMilliVolts(VSENSE_PIN);
@@ -146,36 +182,55 @@ static inline void vsetApply(int counts) {
 #endif
 }
 
-void vsetWrite(int counts) {
-  vsetCounts = constrain(counts, 0, VSET_MAX);
-  vsetApply(vsetCounts);
+void vsetWrite(float duty) {
+  vsetDuty = constrain(duty, 0.0f, 1.0f);
+  vsetApply((int)lrintf(vsetDuty * VSET_MAX));
 }
 
-// Open-loop seed straight from the design equation. It lands within a few
-// hundred mV, so the closed loop only trims tolerances instead of searching
-// the whole range - which is what keeps convergence to a handful of steps.
-int countsForVolts(float v) {
-  const float iSink   = I_ADJ_FULL - (v - VREF_317) / R2_OHM;
-  const float vFilter = iSink * RSENSE_OHM;
-  return constrain((int)lrintf(vFilter / VDD_PWM * VSET_FULL), 0, VSET_MAX);
+// Feed-forward jump straight from the measured line. Lands within the
+// calibration residual, so the integrator only trims - it never has to search
+// the range, which is what keeps a full-scale change down to ~100 ms.
+float dutyForVolts(float v) {
+  return constrain((CAL_V0 - v) / CAL_K, 0.0f, 1.0f);
 }
 
-// Call whenever the target moves. Re-seeding beats letting the integrator
-// walk across the range.
+// Call whenever the target moves. Freezing the integrator for REG_HOLD
+// periods matters: the RC filter lags ~60 ms, and integrating through that
+// lag winds up and undershoots badly on a large jump.
 void regRestart() {
   regSettled     = false;
   regFailed      = false;
   regSettleHits  = 0;
   regSteps       = 0;
-  vsetWrite(countsForVolts(P.volts));
+  regHold        = REG_HOLD;
+  vsetWrite(dutyForVolts(P.volts));
 }
 
 void serviceRegulator() {
+  const float measured = readVolts();
+
+  // Checked before anything else and regardless of hold or fault state. This
+  // is the backstop, so it must not sit behind a guard that a fault could
+  // disable.
+  if (measured > V_TRIP) {
+    vsetWrite(1.0f);
+    if (!regFailed) {
+      regFailed = true;
+      enqueue("FAULT VOLT TRIP");
+      Serial.printf("[reg] OVERVOLTAGE %.2f V > %.2f V trip - parked\n",
+                    measured, V_TRIP);
+    }
+    return;
+  }
+
   if (regFailed) return;                 // latched; a new SET PV clears it
 
-  const float measured = readVolts();
-  const float err      = P.volts - measured;
-  const float tol      = max(REG_TOL_ABS, REG_TOL_FRAC * P.volts);
+  // The feed-forward jump has been applied but the RC filter has not caught
+  // up. Reading now and integrating the difference is pure windup.
+  if (regHold > 0) { regHold--; return; }
+
+  const float err = P.volts - measured;
+  const float tol = max(REG_TOL_ABS, REG_TOL_FRAC * P.volts);
 
   if (fabsf(err) <= tol) {
     // REG_MAX_STEPS has to bound one convergence attempt, not the lifetime of
@@ -185,7 +240,7 @@ void serviceRegulator() {
     regSteps = 0;
     if (!regSettled && ++regSettleHits >= REG_SETTLE_N) {
       regSettled = true;
-      Serial.printf("[reg] settled %.2f V at %d counts\n", measured, vsetCounts);
+      Serial.printf("[reg] settled %.2f V at D=%.3f\n", measured, vsetDuty);
     }
     return;                              // deadband: do not chase ADC noise
   }
@@ -193,36 +248,35 @@ void serviceRegulator() {
   regSettled    = false;
   regSettleHits = 0;
 
-  // Negative slope, hence the minus. Always move at least one count, or a
-  // sub-LSB error stalls the loop just outside tolerance forever.
-  int step = (int)lrintf(-(err / VOLTS_PER_COUNT) * REG_GAIN);
-  if (step == 0) step = (err > 0.0f) ? -1 : 1;
+  // Negative slope, hence the minus: too high a reading must INCREASE duty,
+  // which sinks more ADJ current and brings the output down. No minimum-step
+  // guard is needed - at the REG_TOL_ABS floor the step is already ~2.5 PWM
+  // counts, so the loop cannot stall on quantisation just outside tolerance.
+  const float raw  = vsetDuty - REG_KI * err / CAL_K;
+  const float next = constrain(raw, 0.0f, 1.0f);
 
-  const int next = constrain(vsetCounts + step, 0, VSET_MAX);
-
-  // Railed and still short of target: the setpoint is simply unreachable on
-  // this supply. Notes S3 - flag it rather than chase it. At R2 = 8k25 the
-  // ceiling is ~44.65 V, so a 45 V request lands here until the brick is
-  // trimmed up. The output is at the best achievable value and the reading
-  // agrees with it, so HOLD - parking would be an overreaction.
-  if (next == vsetCounts) {
+  // Already at a clamp and the integrator still wants to push past it: the
+  // setpoint is unreachable on this supply. Notes S3 - flag it rather than
+  // chase it. The output sits at its best achievable value and the reading
+  // agrees, so HOLD; parking would be an overreaction.
+  if ((raw <= 0.0f && vsetDuty <= 0.0f) || (raw >= 1.0f && vsetDuty >= 1.0f)) {
     regFailed = true;
     enqueue("FAULT VOLT RAIL");
-    Serial.printf("[reg] unreachable: want %.2f V, railed at %d counts, reading %.2f V\n",
-                  P.volts, vsetCounts, measured);
+    Serial.printf("[reg] unreachable: want %.2f V, railed at D=%.3f, reading %.2f V\n",
+                  P.volts, vsetDuty, measured);
     return;
   }
 
   vsetWrite(next);
 
-  // Not railed, but the reading will not come to the setpoint. The loop is
-  // driving and the measurement is not responding, so the sense path is
-  // suspect - open divider, dead op-amp, unseated wire - and the true output
-  // is unknown. That is the one case where the failure direction could be
-  // upward, so park at full sink (1.25 V) instead of holding.
+  // Not railed, not tripped, but the reading will not come to the setpoint.
+  // The loop is driving and the measurement is not responding, so the sense
+  // path is suspect - open divider, dead op-amp, unseated wire. V_TRIP cannot
+  // catch this: a divider reading LOW drives duty toward 0, which pushes the
+  // real output UP toward CAL_V0 while the trip sees nothing. Park.
   if (++regSteps > REG_MAX_STEPS) {
     regFailed = true;
-    vsetWrite(VSET_MAX);
+    vsetWrite(1.0f);
     enqueue("FAULT VOLT NOCONV");
     Serial.printf("[reg] no convergence after %d steps, reading %.2f V - parked\n",
                   regSteps, measured);
@@ -322,7 +376,7 @@ void setup() {
   ledcSetup(VSET_CH, VSET_FREQ_HZ, VSET_BITS);
   ledcAttachPin(VSET_PIN, VSET_CH);
 #endif
-  vsetWrite(VSET_MAX);
+  vsetWrite(1.0f);
 
   Serial.begin(115200);
   delay(2000);
@@ -334,8 +388,8 @@ void setup() {
   // Seed the loop at the default setpoint. The gating relay is unpowered and
   // therefore open, so the electrodes see nothing while this settles.
   regRestart();
-  Serial.printf("[reg] seed %d counts for %.1f V (%.1f mV/count)\n",
-                vsetCounts, P.volts, VOLTS_PER_COUNT * 1000.0f);
+  Serial.printf("[reg] cal V0=%.2f K=%.2f -> seed D=%.3f for %.1f V, trip %.1f V\n",
+                CAL_V0, CAL_K, vsetDuty, P.volts, V_TRIP);
 
   BLEDevice::init(DEVICE_NAME);
   pServer = BLEDevice::createServer();
