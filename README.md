@@ -2,7 +2,7 @@
 
 <img src="title.png" alt="Electropolleitor" width="640">
 
-**In-ovo electroporator for chicken eggs — Android app, BLE link, ESP32 firmware.**
+**Electroporator for chicken embryo — Android app, BLE link, ESP32 firmware.**
 
 </div>
 
